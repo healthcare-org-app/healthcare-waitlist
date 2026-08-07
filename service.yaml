@@ -1,0 +1,13 @@
+name: waitlist-service
+port: 8603
+lang: python
+description: "waitlist-service \u2014 domain: appointments"
+http_deps:
+- appointments-service
+- patients-service
+- notifications-service
+- audit-log-service
+publishes:
+- audit.event
+subscribes:
+- appointment.cancelled
