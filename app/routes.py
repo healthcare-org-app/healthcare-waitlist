@@ -132,6 +132,40 @@ def build_blueprint(svc) -> Blueprint:
                    target=f"{RESOURCE}:{record_id}")
         return jsonify({"deactivated": record_id})
 
+    @bp.post("/<int:record_id>/arrive")
+    @require_auth(scopes=[f"{RESOURCE}.write"])
+    def arrive(record_id: int):
+        """A waitlisted patient has arrived: check them in on their appointment.
 
+        Calls appointments-service `POST /api/appointments/<appointment_id>/check-in` and
+        forwards the caller's bearer token (that endpoint requires `appointments.write`).
+        A refusal from appointments-service (for example 409) is passed through unchanged.
+        """
+        row = db.query_one(f"SELECT * FROM {TABLE} WHERE id=%s", (record_id,))
+        if not row:
+            return jsonify({"error": f"{RESOURCE} {record_id} not found"}), 404
+        appointment_id = (row["data"] or {}).get("appointment_id")
+        if not appointment_id:
+            return jsonify({"error": f"{RESOURCE} {record_id} has no appointment_id"}), 422
+        _peer = clients.get('appointments-service')
+        if not _peer:
+            return jsonify({"error": "appointments-service client not configured"}), 503
+        try:
+            resp = _peer.post(
+                f"/api/appointments/{appointment_id}/check-in",
+                headers={"Authorization": request.headers.get("Authorization", "")},
+            )
+        except ServiceUnavailable as _e:
+            return jsonify({"error": str(_e)}), 503
+        if resp.status_code >= 400:
+            try:
+                upstream = resp.json()
+            except ValueError:
+                upstream = {"error": resp.text[:200]}
+            return jsonify({"error": "check-in refused by appointments-service",
+                            "upstream": upstream}), resp.status_code
+        emit_audit(bus, action=f"{RESOURCE}.arrive", actor=_actor(),
+                   target=f"{RESOURCE}:{record_id}")
+        return jsonify({"waitlist_id": record_id, "appointment": resp.json()})
 
     return bp
